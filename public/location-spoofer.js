@@ -812,6 +812,22 @@
 
     var scriptArgs = typeof $argument === "string" ? parseArgumentString($argument) : {};
     var config = normalizeConfig(scriptArgs);
+    // Diagnostic v2: local-only metadata; no URL, token or coordinates.
+    function diagnose(stage, detail) {
+      if (!config.debug) return;
+      var text = "[Location Spoofer v2] " + stage + ": " + detail;
+      console.log(text);
+      try {
+        var key = "ios-location-spoofer-diagnostic-v2-" + stage;
+        var now = Date.now();
+        var previous = typeof $persistentStore !== "undefined" ? Number($persistentStore.read(key) || 0) : 0;
+        if (typeof $persistentStore !== "undefined") $persistentStore.write(String(now), key);
+        if ((!previous || now - previous > 60000) && typeof $notification !== "undefined") {
+          $notification.post("定位诊断 v2", stage, detail);
+        }
+      } catch (ignored) {}
+    }
+    diagnose("脚本已触发", String(($request && $request.method) || "未知方法") + "; HTTP " + String(($response && ($response.status || $response.statusCode)) || "未知状态"));
     var completed = false;
     function finish(value) { if (!completed) { completed = true; $done(value); } }
 
@@ -847,10 +863,12 @@
         if (activeConfig.debug) {
           console.log("[Location Spoofer] Patched " + result.wifiCount + " Wi-Fi, " + result.cellCount + " Cell. Format: " + result.kind);
         }
+        diagnose("定位数据已改写", "Wi-Fi记录 " + result.wifiCount + "; 基站记录 " + result.cellCount);
         completeResponse(result.response, result.wifiCount, result.cellCount);
       } catch (err) {
         if (activeConfig.debug) {
           console.log("[Location Spoofer] Failed: " + err.message);
+          diagnose("定位数据解析失败", "无法识别此次定位数据；原响应保留，具体错误见本机脚本日志");
         }
         if (activeConfig.failOpen) {
           passThrough();
@@ -873,16 +891,17 @@
     var contentType = "";
     for (var hk in responseHeaders) { if (hk.toLowerCase() === "content-type") contentType = String(responseHeaders[hk]).toLowerCase(); }
     if (method !== "POST" || (statusCode && statusCode !== 200) || /text\/html|application\/json|text\/plain/.test(contentType)) {
-      if (config.debug) console.log("[Location Spoofer] Pass-through: method/status/content-type is not a positioning response");
+      diagnose("保留原响应", "浏览器请求、HTTP错误或非定位数据；未改写位置");
       passThrough(); return;
     }
     if (config.configUrl) {
       fetchRemoteConfig(config.configUrl, function (remoteData) {
         if (!remoteData) {
-          if (config.debug) console.log("[Location Spoofer] Remote configuration unavailable; original response preserved");
+          diagnose("坐标读取失败", "远程配置无法读取；未使用默认坐标，保留原响应");
           passThrough(); return;
         }
         if (remoteData) {
+          diagnose("坐标读取成功", "远程配置已读取；不在通知中显示坐标");
           if (remoteData.latitude != null) config.latitude = Number(remoteData.latitude);
           if (remoteData.longitude != null) config.longitude = Number(remoteData.longitude);
           if (remoteData.horizontalAccuracy != null) config.horizontalAccuracy = Number(remoteData.horizontalAccuracy);
