@@ -800,6 +800,8 @@
     });
   }
 
+  // Local compatibility patch: response callbacks, safe pass-through and config failures.
+  // Original copyright and CC BY-NC-SA 4.0 license retained.
   function runShadowrocket() {
     var hasResponse = typeof $response !== "undefined" && $response != null;
     var hasRequest = typeof $request !== "undefined" && $request != null;
@@ -810,30 +812,30 @@
 
     var scriptArgs = typeof $argument === "string" ? parseArgumentString($argument) : {};
     var config = normalizeConfig(scriptArgs);
+    var completed = false;
+    function finish(value) { if (!completed) { completed = true; $done(value); } }
 
     function passThrough() {
-      $done({});
+      finish({});
     }
 
     function completeResponse(bodyBytes, wifiCount, cellCount) {
       var headers = ($response && $response.headers) ? $response.headers : {};
       delete headers["Content-Encoding"];
       delete headers["content-encoding"];
-      headers["Content-Length"] = String(bodyBytes.length);
+      delete headers["Content-Length"];
+      delete headers["content-length"];
+      delete headers["Transfer-Encoding"];
+      delete headers["transfer-encoding"];
       headers["X-Location-Spoofer"] = "active";
       headers["X-Location-Spoofer-Wifi"] = String(wifiCount);
       headers["X-Location-Spoofer-Cell"] = String(cellCount);
 
-      $done({
-        response: {
-          status: 200,
-          headers: headers,
-          body: bodyBytes
-        }
-      });
+      finish({ headers: headers, body: bodyBytes });
     }
 
     function processRewrite(activeConfig) {
+      if (activeConfig.enabled === false || activeConfig.enabled === "false") { passThrough(); return; }
       try {
         var rawBody = ByteUtils.toUint8Array(($response && $response.body != null) ? $response.body : ($response && $response.bodyBytes));
         if (!rawBody || rawBody.length < 2) {
@@ -864,8 +866,22 @@
       }
     }
 
+    // A browser GET/HTTP error is not a binary Apple positioning response.
+    var method = String(($request && $request.method) || "").toUpperCase();
+    var statusCode = Number(($response && ($response.status || $response.statusCode)) || 0);
+    var responseHeaders = ($response && $response.headers) || {};
+    var contentType = "";
+    for (var hk in responseHeaders) { if (hk.toLowerCase() === "content-type") contentType = String(responseHeaders[hk]).toLowerCase(); }
+    if (method !== "POST" || (statusCode && statusCode !== 200) || /text\/html|application\/json|text\/plain/.test(contentType)) {
+      if (config.debug) console.log("[Location Spoofer] Pass-through: method/status/content-type is not a positioning response");
+      passThrough(); return;
+    }
     if (config.configUrl) {
       fetchRemoteConfig(config.configUrl, function (remoteData) {
+        if (!remoteData) {
+          if (config.debug) console.log("[Location Spoofer] Remote configuration unavailable; original response preserved");
+          passThrough(); return;
+        }
         if (remoteData) {
           if (remoteData.latitude != null) config.latitude = Number(remoteData.latitude);
           if (remoteData.longitude != null) config.longitude = Number(remoteData.longitude);
